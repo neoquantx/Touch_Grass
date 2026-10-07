@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "Grasslock",
+    "slug": "grasslock",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "grasslock",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.grasslock.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/icon.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Grasslock to use your location for missions."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "The app needs photo access for missions."
+        }
+      ],
+      [
+        "llama.rn",
+        {
+          "enableEntitlements": true,
+          "entitlementsProfile": "production",
+          "forceCxx20": true,
+          "enableOpenCLAndHexagon": true
+        }
+      ]
+    ]
+  }
+}
