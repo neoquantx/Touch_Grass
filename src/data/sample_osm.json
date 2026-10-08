@@ -1,0 +1,12 @@
+[
+  { "id": "way/101", "dxMeters": 100, "dyMeters": 282.8, "name": "Sample Park", "category": "park", "tags": {"leisure": "park", "name": "Sample Park"} },
+  { "id": "way/102", "dxMeters": -300, "dyMeters": 400, "name": "Sample Garden", "category": "garden", "tags": {"leisure": "garden", "name": "Sample Garden"} },
+  { "id": "way/103", "dxMeters": 500, "dyMeters": -748, "name": "Sample Forest", "category": "forest", "tags": {"landuse": "forest", "name": "Sample Forest"} },
+  { "id": "way/104", "dxMeters": -400, "dyMeters": -574, "name": "Sample Lake", "category": "water", "tags": {"natural": "water", "name": "Sample Lake"} },
+  { "id": "way/105", "dxMeters": 200, "dyMeters": 403.1, "name": "Old Town Hall", "category": "historic", "tags": {"historic": "building", "name": "Old Town Hall", "inscription": "Built in 1842"} },
+  { "id": "node/106", "dxMeters": 800, "dyMeters": 600, "name": "Scenic Lookout", "category": "viewpoint", "tags": {"tourism": "viewpoint", "name": "Scenic Lookout"} },
+  { "id": "node/107", "dxMeters": -150, "dyMeters": 316.2, "name": "Modern Sculpture", "category": "artwork", "tags": {"tourism": "artwork", "name": "Modern Sculpture"} },
+  { "id": "node/108", "dxMeters": 150, "dyMeters": -200, "name": null, "category": "tree", "tags": {"natural": "tree", "species": "Ficus religiosa"} },
+  { "id": "node/109", "dxMeters": -300, "dyMeters": -519.6, "name": null, "category": "drinking_water", "tags": {"amenity": "drinking_water"} },
+  { "id": "way/110", "dxMeters": 600, "dyMeters": 921.9, "name": "Sample Wood", "category": "wood", "tags": {"natural": "wood", "name": "Sample Wood"} }
+]
