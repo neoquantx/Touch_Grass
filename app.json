@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "Grasslock",
-    "slug": "grasslock",
+    "name": "Touch Grass",
+    "slug": "touch-grass",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -11,7 +11,7 @@
       "supportsTablet": true
     },
     "android": {
-      "package": "com.grasslock.app",
+      "package": "com.touchgrass.app",
       "adaptiveIcon": {
         "backgroundColor": "#ffffff",
         "foregroundImage": "./assets/icon.png"
@@ -31,13 +31,15 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Allow Grasslock to use your location for missions."
+          "locationAlwaysAndWhenInUsePermission": "Allow Grasslock to use your location for missions.",
+          "locationWhenInUsePermission": "Allow Touch Grass to use your location for missions."
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "The app needs photo access for missions."
+          "photosPermission": "The app needs photo access for missions.",
+          "cameraPermission": "The app needs camera access for missions."
         }
       ],
       [
