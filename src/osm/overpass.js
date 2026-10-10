@@ -1,62 +1,33 @@
 import { CONFIG } from '../config.js';
 import { haversineMeters } from '../utils/geo.js';
 
-export function buildQuery(lat, lon, radius) {
-  return `[out:json][timeout:25];
+export function buildQuery(lat, lon, radius, level = 'full') {
+  if (level === 'light') {
+    const r = 700;
+    return `[out:json][timeout:25][maxsize:33554432];
 (
-  nwr["leisure"~"^(park|garden)$"](around:${radius},${lat},${lon});
-  nwr["landuse"~"^(forest|grass)$"](around:${radius},${lat},${lon});
-  nwr["natural"~"^(wood|water)$"](around:${radius},${lat},${lon});
+  nw["leisure"~"^(park|garden)$"]["name"](around:${r},${lat},${lon});
+  nw["natural"="water"]["name"](around:${r},${lat},${lon});
+  nw["historic"]["name"](around:${r},${lat},${lon});
+  nw["tourism"~"^(viewpoint|artwork)$"](around:${r},${lat},${lon});
+  node["amenity"="drinking_water"](around:${r},${lat},${lon});
+);
+out center tags qt;`;
+  }
+
+  // full
+  return `[out:json][timeout:25][maxsize:33554432];
+(
+  nw["leisure"~"^(park|garden)$"]["name"](around:${radius},${lat},${lon});
+  nw["landuse"="forest"]["name"](around:${radius},${lat},${lon});
+  nw["natural"~"^(wood|water)$"]["name"](around:${radius},${lat},${lon});
   node["natural"="tree"]["name"](around:${radius},${lat},${lon});
   node["natural"="tree"]["species"](around:${radius},${lat},${lon});
-  nwr["historic"](around:${radius},${lat},${lon});
-  nwr["tourism"~"^(viewpoint|artwork)$"](around:${radius},${lat},${lon});
+  nw["historic"]["name"](around:${radius},${lat},${lon});
+  nw["tourism"~"^(viewpoint|artwork)$"](around:${radius},${lat},${lon});
   node["amenity"="drinking_water"](around:${radius},${lat},${lon});
 );
-out center tags;`;
-}
-
-// NETWORK: setup only
-export async function fetchOverpass(lat, lon, radius) {
-  const query = buildQuery(lat, lon, radius);
-  const body = `data=${encodeURIComponent(query)}`;
-  
-  let lastError = null;
-  
-  for (const endpoint of CONFIG.AREA.overpassEndpoints) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), CONFIG.AREA.timeoutMs);
-    
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      const json = await response.json();
-      if (!json.elements) {
-        throw new Error('Invalid JSON: missing elements array');
-      }
-      
-      return json.elements;
-    } catch (e) {
-      clearTimeout(timeoutId);
-      lastError = `${endpoint} failed: ${e.message}`;
-      // Continue to next endpoint
-    }
-  }
-  
-  throw new Error(`All Overpass endpoints failed. Last error: ${lastError}`);
+out center tags qt;`;
 }
 
 export function normalizeElements(rawElements, centerLat, centerLon) {
