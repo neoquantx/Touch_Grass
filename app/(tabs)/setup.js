@@ -1,35 +1,59 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, Button, StyleSheet, ScrollView, Alert, Linking, ActivityIndicator } from 'react-native';
+import { View, Text, Alert, Linking, ScrollView, TouchableOpacity } from 'react-native';
 import * as Location from 'expo-location';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useRouter } from 'expo-router';
-import { useStore, selectIsSetupComplete } from '../../src/store/useStore';
-import { CONFIG } from '../../src/config';
-import { fetchOverpass, normalizeElements } from '../../src/osm/overpass';
-import { saveAreaCache, loadAreaCache, clearAreaCache } from '../../src/osm/cache';
-import { buildSampleArea } from '../../src/osm/sample';
+import { Ionicons } from '@expo/vector-icons';
+import { useStore, selectIsSetupComplete } from '../../src/store/useStore.js';
+import { CONFIG } from '../../src/config.js';
+import { normalizeElements } from '../../src/osm/overpass.js';
+import { fetchOverpass, OverpassError } from '../../src/osm/overpassClient.js';
+import { saveAreaCache, loadAreaCache, clearAreaCache } from '../../src/osm/cache.js';
+import { buildSampleArea } from '../../src/osm/sample.js';
+import areaSeed from '../../src/data/area_seed.json';
+
+import { confirmTwice } from '../../src/utils/confirm.js';
+import { Screen } from '../../src/components/ui/Screen.js';
+import { Card } from '../../src/components/ui/Card.js';
+import { Button } from '../../src/components/ui/Button.js';
+import { Chip } from '../../src/components/ui/Chip.js';
+import { Notice } from '../../src/components/ui/Notice.js';
+import { ProgressBar } from '../../src/components/ui/ProgressBar.js';
+import { IconCircle } from '../../src/components/ui/IconCircle.js';
+import { colors, spacing, type } from '../../src/theme.js';
 
 export default function SetupScreen() {
   const router = useRouter();
   const hasHydrated = useStore((state) => state.hasHydrated);
+  const corruptStateWarning = useStore((state) => state.corruptStateWarning);
+  
   const modelReady = useStore((state) => state.modelReady);
   const setModelReady = useStore((state) => state.setModelReady);
   const area = useStore((state) => state.area);
   const setArea = useStore((state) => state.setArea);
+  const resetProgress = useStore((state) => state.resetProgress);
+  const resetEverything = useStore((state) => state.resetEverything);
   const clearArea = useStore((state) => state.clearArea);
+  const tokens = useStore((state) => state.tokens);
+  const lastTps = useStore((state) => state.lastTps);
   const isSetupComplete = useStore(selectIsSetupComplete);
 
-  // Step 1: Location
   const [locStatus, setLocStatus] = useState('Not started');
   const [locGranted, setLocGranted] = useState(false);
 
-  // Step 2: Model
   const [modelStatus, setModelStatus] = useState('Not started');
-  const [modelProgress, setModelProgress] = useState(null); // { percent, mb }
+  const [modelProgress, setModelProgress] = useState(null);
   const downloadResumableRef = useRef(null);
 
-  // Step 3: Area
   const [areaStatus, setAreaStatus] = useState('Not started');
+  const [areaProgressText, setAreaProgressText] = useState('');
+  const [areaFailures, setAreaFailures] = useState(null);
+  const [manageStep, setManageStep] = useState(null);
+  const [areaDetailsOpen, setAreaDetailsOpen] = useState(false);
+  const [areaElapsed, setAreaElapsed] = useState(0);
+  const areaTimerRef = useRef(null);
+
+  const [modelFileSize, setModelFileSize] = useState(0);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -53,13 +77,16 @@ export default function SetupScreen() {
       if (info.exists && info.size >= CONFIG.MODEL.minBytes) {
         setModelReady(true);
         setModelStatus('Done');
+        setModelFileSize((info.size / 1024 / 1024).toFixed(1));
       } else {
         setModelReady(false);
         setModelStatus('Not started');
+        setModelFileSize(0);
       }
     } catch (e) {
       setModelReady(false);
       setModelStatus('Not started');
+      setModelFileSize(0);
     }
   };
 
@@ -86,7 +113,6 @@ export default function SetupScreen() {
     }
   };
 
-  // NETWORK: setup only
   const downloadModel = async () => {
     setModelStatus('In progress');
     setModelProgress({ percent: 0, mb: 0 });
@@ -112,6 +138,7 @@ export default function SetupScreen() {
         await FileSystem.moveAsync({ from: uri, to: finalUri });
         setModelReady(true);
         setModelStatus('Done');
+        setModelFileSize((info.size / 1024 / 1024).toFixed(1));
       } else {
         await FileSystem.deleteAsync(uri, { idempotent: true });
         setModelStatus('Failed: Truncated file');
@@ -129,9 +156,7 @@ export default function SetupScreen() {
 
   const cancelDownload = async () => {
     if (downloadResumableRef.current) {
-      try {
-        await downloadResumableRef.current.cancelAsync();
-      } catch (e) {}
+      try { await downloadResumableRef.current.cancelAsync(); } catch (e) {}
       downloadResumableRef.current = null;
       setModelStatus('Failed: Cancelled');
       setModelProgress(null);
@@ -141,71 +166,65 @@ export default function SetupScreen() {
   };
 
   const deleteModel = async () => {
-    const finalUri = `${FileSystem.documentDirectory}${CONFIG.MODEL.fileName}`;
-    await FileSystem.deleteAsync(finalUri, { idempotent: true });
-    setModelReady(false);
-    setModelStatus('Not started');
+        const finalUri = `${FileSystem.documentDirectory}${CONFIG.MODEL.fileName}`;
+        await FileSystem.deleteAsync(finalUri, { idempotent: true });
+        setModelReady(false);
+        setModelStatus('Not started');
+        setModelFileSize(0);
   };
 
   const fetchLocationWithTimeout = async () => {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error('Location request timed out (15s)'));
-      }, 15000);
+      const timer = setTimeout(() => reject(new Error('Location request timed out (15s)')), 15000);
       Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced })
-        .then((loc) => {
-          clearTimeout(timer);
-          resolve(loc);
-        })
-        .catch((e) => {
-          clearTimeout(timer);
-          reject(e);
-        });
+        .then((loc) => { clearTimeout(timer); resolve(loc); })
+        .catch((e) => { clearTimeout(timer); reject(e); });
     });
   };
 
-  // NETWORK: setup only
   const cacheArea = async () => {
-    if (!locGranted) {
-      setAreaStatus('Failed: Need location permission');
-      return;
-    }
+    if (!locGranted) return setAreaStatus('Failed: Need location permission');
     setAreaStatus('In progress');
+    setAreaFailures(null);
+    setAreaProgressText('Finding location...');
+    setAreaElapsed(0);
+    
+    areaTimerRef.current = setInterval(() => {
+      setAreaElapsed(prev => prev + 1);
+    }, 1000);
+
     try {
       const loc = await fetchLocationWithTimeout();
       const lat = loc.coords.latitude;
       const lon = loc.coords.longitude;
 
-      const rawElements = await fetchOverpass(lat, lon, CONFIG.AREA.radiusMeters);
+      const rawElements = await fetchOverpass(lat, lon, CONFIG.AREA.radiusMeters, (msg) => {
+        setAreaProgressText(msg);
+      });
+      
       const normalized = normalizeElements(rawElements, lat, lon);
       
       const breakdown = {};
-      normalized.forEach(el => {
-        breakdown[el.category] = (breakdown[el.category] || 0) + 1;
-      });
+      normalized.forEach(el => { breakdown[el.category] = (breakdown[el.category] || 0) + 1; });
 
-      const meta = {
-        center: { lat, lon },
-        radius: CONFIG.AREA.radiusMeters,
-        fetchedAt: Date.now(),
-        count: normalized.length,
-        breakdown,
-        source: 'overpass'
-      };
-
+      const meta = { center: { lat, lon }, radius: CONFIG.AREA.radiusMeters, fetchedAt: Date.now(), count: normalized.length, breakdown, source: 'overpass' };
       await saveAreaCache(meta, normalized);
       setArea(meta);
       setAreaStatus('Done');
     } catch (e) {
-      setAreaStatus(`Failed: ${e.message}`);
+      setAreaStatus(area ? 'Done' : `Failed: ${e.message}`);
+      if (area) Alert.alert('Cache failed', e.message);
+      if (e instanceof OverpassError) {
+        setAreaFailures(e.failures);
+      }
+    } finally {
+      clearInterval(areaTimerRef.current);
+      areaTimerRef.current = null;
     }
   };
 
   const useSampleData = async () => {
-    if (!locGranted) {
-      setAreaStatus('Failed: Need location permission');
-      return;
-    }
+    if (!locGranted) return setAreaStatus('Failed: Need location permission');
     setAreaStatus('In progress');
     try {
       const loc = await fetchLocationWithTimeout();
@@ -214,21 +233,25 @@ export default function SetupScreen() {
 
       const normalized = buildSampleArea(lat, lon);
       const breakdown = {};
-      normalized.forEach(el => {
-        breakdown[el.category] = (breakdown[el.category] || 0) + 1;
-      });
+      normalized.forEach(el => { breakdown[el.category] = (breakdown[el.category] || 0) + 1; });
 
-      const meta = {
-        center: { lat, lon },
-        radius: CONFIG.AREA.radiusMeters,
-        fetchedAt: Date.now(),
-        count: normalized.length,
-        breakdown,
-        source: 'sample'
-      };
-
+      const meta = { center: { lat, lon }, radius: CONFIG.AREA.radiusMeters, fetchedAt: Date.now(), count: normalized.length, breakdown, source: 'sample' };
       await saveAreaCache(meta, normalized);
       setArea(meta);
+      setAreaStatus('Done');
+    } catch (e) {
+      setAreaStatus(`Failed: ${e.message}`);
+    }
+  };
+
+  const useBundledData = async () => {
+    setAreaStatus('In progress');
+    try {
+      if (!areaSeed || !areaSeed.meta || areaSeed.elements.length === 0) {
+        throw new Error('Bundled area is empty');
+      }
+      await saveAreaCache(areaSeed.meta, areaSeed.elements);
+      setArea(areaSeed.meta);
       setAreaStatus('Done');
     } catch (e) {
       setAreaStatus(`Failed: ${e.message}`);
@@ -241,109 +264,295 @@ export default function SetupScreen() {
     setAreaStatus('Not started');
   };
 
+  const getStatusChipProps = (status) => {
+    if (status === 'Done') return { label: 'Done', bgColor: colors.successSoft, textColor: colors.success };
+    if (status === 'In progress') return { label: 'Working...', bgColor: colors.primarySoft, textColor: colors.primary };
+    if (status.startsWith('Failed')) return { label: 'Failed', bgColor: colors.dangerSoft, textColor: colors.danger };
+    return { label: 'Not started', bgColor: colors.surfaceAlt, textColor: colors.textMuted };
+  };
+
   if (!hasHydrated) return null;
 
+  let offlineReadiness = "Yes";
+  if (!corruptStateWarning && !locGranted) offlineReadiness = "No: Location permission";
+  else if (corruptStateWarning) offlineReadiness = "No: Corrupt state file";
+  else if (!modelReady) offlineReadiness = "No: Model missing";
+  else if (!area) offlineReadiness = "No: Map area missing";
+
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.stepTitle}>Step 1: Location</Text>
-        <Text style={styles.statusLine}>Status: {locStatus}</Text>
-        {!locGranted ? (
-          <>
-            <Button title="Grant Location Permission" onPress={requestLocation} />
-            {locStatus.startsWith('Failed') && (
-              <Button title="Open Settings" onPress={() => Linking.openSettings()} color="#d9534f" />
-            )}
-          </>
-        ) : null}
-      </View>
+    <Screen scroll title="Setup">
+      <View style={{ padding: spacing[16] }}>
 
-      <View style={styles.card}>
-        <Text style={styles.stepTitle}>Step 2: AI Model</Text>
-        <Text style={styles.statusLine}>Status: {modelStatus}</Text>
+        <Card style={{ marginBottom: spacing[16] }}>
+          <Text style={[type.h2, { marginBottom: spacing[8] }]}>Safety</Text>
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[4] }]}>• Public mapped places only</Text>
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[4] }]}>• Watch traffic</Text>
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[4] }]}>• Do not use the phone while crossing roads</Text>
+          <Text style={[type.body, { color: colors.textMuted }]}>• Daylight recommended</Text>
+        </Card>
+
         
-        {!modelReady && modelStatus !== 'In progress' && (
-          <Button title="Download AI model (about 350 MB, use Wi-Fi)" onPress={downloadModel} />
+        {corruptStateWarning && (
+           <Notice variant="error" title="Warning" message="Your saved state was corrupted. We had to reset it to defaults." style={{ marginBottom: spacing[16] }} />
         )}
         
-        {modelStatus === 'In progress' && (
-          <View style={{ marginVertical: 10 }}>
-            {modelProgress && (
-              <Text style={{ textAlign: 'center', marginBottom: 5 }}>
-                {(modelProgress.percent * 100).toFixed(1)}% ({modelProgress.mb} MB)
-              </Text>
-            )}
-            <Button title="Cancel Download" onPress={cancelDownload} color="#d9534f" />
+        {area?.source === 'sample' && (
+          <View style={{ marginBottom: spacing[16] }}>
+            <Notice variant="warn" text="Using SAMPLE map data. Cache your real area in Setup." action={{ label: 'Cache now', onPress: cacheArea }} />
           </View>
         )}
 
-        {modelReady && (
-          <View style={{ marginTop: 10 }}>
-            <Button title="Open inference test" onPress={() => router.push('/debug')} color="#5bc0de" />
-            <View style={{ height: 10 }} />
-            <Button title="Delete model" onPress={deleteModel} color="#d9534f" />
+        <Card style={{ marginBottom: spacing[24] }}>
+          <Text style={[type.h2, { color: colors.text, marginBottom: spacing[16] }]}>How it works</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[12] }}>
+            <Ionicons name="walk" size={24} color={colors.primary} style={{ marginRight: spacing[12] }} />
+            <Text style={[type.body, { color: colors.text, flex: 1 }]}>Walk to real places near you</Text>
           </View>
-        )}
-      </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[12] }}>
+            <Ionicons name="location" size={24} color={colors.primary} style={{ marginRight: spacing[12] }} />
+            <Text style={[type.body, { color: colors.text, flex: 1 }]}>Prove it with GPS and a photo</Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[16] }}>
+            <Ionicons name="flash" size={24} color={colors.primary} style={{ marginRight: spacing[12] }} />
+            <Text style={[type.body, { color: colors.text, flex: 1 }]}>Earn tokens to chat with an AI that lives entirely on this phone</Text>
+          </View>
+          <Text style={[type.caption, { color: colors.textMuted }]}>
+            Photos, location and chats never leave this phone. Internet is used only for the downloads on this screen.
+          </Text>
+        </Card>
 
-      <View style={styles.card}>
-        <Text style={styles.stepTitle}>Step 3: Map Area</Text>
-        <Text style={styles.statusLine}>Status: {areaStatus}</Text>
-        
-        {area ? (
-          <View style={{ marginTop: 10 }}>
-            <Text>Elements found: {area.count}</Text>
-            {area.breakdown && (
-              <Text style={{ fontSize: 12, color: '#666', marginTop: 5 }}>
-                {Object.entries(area.breakdown).map(([k, v]) => `${k} ${v}`).join(', ')}
-              </Text>
-            )}
-            {area.count < 5 && area.source !== 'sample' && (
-              <View style={{ marginVertical: 10 }}>
-                <Text style={{ color: '#d9534f', fontWeight: 'bold' }}>Warning: Too few elements found. Missions may be limited.</Text>
-                <View style={{ height: 10 }} />
-                <Button title="Use sample data instead" onPress={useSampleData} color="#f0ad4e" />
-              </View>
-            )}
-            {area.source === 'sample' && (
-              <Text style={styles.sampleLabel}>Using SAMPLE data</Text>
-            )}
-            <View style={{ height: 10 }} />
-            <Button title="Clear area cache" onPress={clearMyArea} color="#d9534f" />
+        {/* Step 1 */}
+        <Card style={{ marginBottom: spacing[16], borderColor: locStatus === 'Done' ? colors.success : 'transparent', borderWidth: 1 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing[12] }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <IconCircle name="location" color={colors.surface} bgColor={colors.text} size={28} />
+              <Text style={[type.h2, { color: colors.text, marginLeft: spacing[12] }]}>Step 1: Location</Text>
+            </View>
+            <Chip {...getStatusChipProps(locStatus)} />
           </View>
-        ) : (
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[16] }]}>We need your location to find nearby places.</Text>
+          {locStatus.startsWith('Failed') && <Notice variant="error" text={locStatus} />}
+          {!locGranted && (
+            <Button label="Grant Location Permission" onPress={requestLocation} style={{ marginTop: spacing[12] }} />
+          )}
+          {locStatus.startsWith('Failed') && !locGranted && (
+            <Button label="Open Settings" onPress={() => Linking.openSettings()} variant="secondary" style={{ marginTop: spacing[8] }} />
+          )}
+
+          {locStatus === 'Done' && (
+            <View style={{ marginTop: spacing[12], borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing[12] }}>
+              <TouchableOpacity onPress={() => setManageStep(manageStep === 1 ? null : 1)}>
+                <Text style={{ color: colors.primary, fontWeight: 'bold' }}>{manageStep === 1 ? 'Hide Manage' : 'Manage'}</Text>
+              </TouchableOpacity>
+              {manageStep === 1 && (
+                <View style={{ marginTop: spacing[8] }}>
+                  <Button label="Open app settings" onPress={() => Linking.openSettings()} variant="secondary" />
+                </View>
+              )}
+            </View>
+          )}
+        </Card>
+
+        {/* Step 2 */}
+        <Card style={{ marginBottom: spacing[16], borderColor: modelStatus === 'Done' ? colors.success : 'transparent', borderWidth: 1 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing[12] }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <IconCircle name="cloud-download" color={colors.surface} bgColor={colors.text} size={28} />
+              <Text style={[type.h2, { color: colors.text, marginLeft: spacing[12] }]}>Step 2: AI Model</Text>
+            </View>
+            <Chip {...getStatusChipProps(modelStatus)} />
+          </View>
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[16] }]}>Download the AI model (about {CONFIG.MODEL.approxMB} MB, use Wi-Fi).</Text>
+          {modelStatus.startsWith('Failed') && <Notice variant="error" text={modelStatus} />}
+          {modelStatus === 'In progress' && (
+             <View style={{ marginTop: spacing[12] }}>
+               <ProgressBar progress={modelProgress?.percent || 0} />
+               <Text style={[type.caption, { color: colors.textMuted, textAlign: 'center', marginTop: spacing[8], marginBottom: spacing[16] }]}>
+                 {((modelProgress?.percent || 0) * 100).toFixed(1)}% ({modelProgress?.mb} MB)
+               </Text>
+               <Button label="Cancel Download" onPress={cancelDownload} variant="danger" />
+             </View>
+          )}
+          {!modelReady && modelStatus !== 'In progress' && (
+            <Button label="Download AI Model" onPress={downloadModel} style={{ marginTop: spacing[12] }} />
+          )}
+
+          {modelStatus === 'Done' && (
+            <View style={{ marginTop: spacing[12], borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing[12] }}>
+              <TouchableOpacity onPress={() => setManageStep(manageStep === 2 ? null : 2)}>
+                <Text style={{ color: colors.primary, fontWeight: 'bold' }}>{manageStep === 2 ? 'Hide Manage' : 'Manage'}</Text>
+              </TouchableOpacity>
+              {manageStep === 2 && (
+                <View style={{ marginTop: spacing[8] }}>
+                  <Button label="Re-download model" onPress={async () => {
+                    const ok = await confirmTwice({
+                      title: 'Re-download model',
+                      firstMessage: 'This will download the AI model again.',
+                      secondMessage: 'Are you sure?',
+                      confirmLabel: 'Re-download'
+                    });
+                    if (ok) downloadModel();
+                  }} variant="secondary" style={{ marginBottom: spacing[8] }} />
+                  <Button label="Delete model" onPress={async () => {
+                    const ok = await confirmTwice({
+                      title: 'Delete model',
+                      firstMessage: 'This will remove the model file from your device.',
+                      secondMessage: 'Are you sure? You will need to download it again.',
+                      confirmLabel: 'Delete'
+                    });
+                    if (ok) deleteModel();
+                  }} variant="danger" />
+                </View>
+              )}
+            </View>
+          )}
+        </Card>
+
+        {/* Step 3 */}
+        <Card style={{ marginBottom: spacing[24], borderColor: areaStatus === 'Done' ? colors.success : 'transparent', borderWidth: 1 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing[12] }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <IconCircle name="compass" color={colors.surface} bgColor={colors.text} size={28} />
+              <Text style={[type.h2, { color: colors.text, marginLeft: spacing[12] }]}>Step 3: Map Area</Text>
+            </View>
+            <Chip {...getStatusChipProps(areaStatus)} />
+          </View>
+          <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[16] }]}>Save a {CONFIG.AREA.radiusMeters >= 1000 ? CONFIG.AREA.radiusMeters / 1000 : CONFIG.AREA.radiusMeters} {CONFIG.AREA.radiusMeters >= 1000 ? 'km' : 'm'} radius around you.</Text>
+          
+          {areaStatus.startsWith('Failed') && (
+            <View>
+              <Notice variant="error" text={areaStatus} />
+              {areaFailures && areaFailures.length > 0 && (
+                <View style={{ marginTop: spacing[8] }}>
+                  <TouchableOpacity onPress={() => setAreaDetailsOpen(!areaDetailsOpen)}>
+                    <Text style={{ color: colors.primary, fontWeight: 'bold' }}>
+                      {areaDetailsOpen ? 'Hide Details' : 'Show Details'}
+                    </Text>
+                  </TouchableOpacity>
+                  {areaDetailsOpen && (
+                    <View style={{ marginTop: spacing[8], backgroundColor: colors.surfaceAlt, padding: spacing[8], borderRadius: 4 }}>
+                      {areaFailures.map((f, i) => (
+                        <Text key={i} style={{ color: colors.text, fontSize: 12, marginBottom: 4 }}>
+                          • {f.host}: [{f.status}] {f.error}
+                        </Text>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              )}
+            </View>
+          )}
+
+          {areaStatus === 'In progress' && (
+            <View style={{ marginTop: spacing[12] }}>
+              <Text style={{ color: colors.text }}>{areaProgressText}</Text>
+              <Text style={{ color: colors.textMuted, fontSize: 12 }}>Elapsed: {areaElapsed}s</Text>
+            </View>
+          )}
+          
+          {!area && areaStatus !== 'In progress' && (
+             <View style={{ marginTop: spacing[12] }}>
+               <Button label={areaStatus.startsWith('Failed') ? 'Retry caching' : 'Cache my area'} onPress={cacheArea} />
+               <Button label="Use sample data instead" onPress={useSampleData} variant="secondary" style={{ marginTop: spacing[8] }} />
+               {areaSeed && areaSeed.elements && areaSeed.elements.length >= 5 && (
+                 <Button label="Use bundled area (pre-downloaded)" onPress={useBundledData} variant="secondary" style={{ marginTop: spacing[8] }} />
+               )}
+             </View>
+          )}
+
+          {(areaStatus === 'Done' || area) && (
+            <View style={{ marginTop: spacing[12], borderTopWidth: 1, borderTopColor: colors.border, paddingTop: spacing[12] }}>
+              <TouchableOpacity onPress={() => setManageStep(manageStep === 3 ? null : 3)}>
+                <Text style={{ color: colors.primary, fontWeight: 'bold' }}>{manageStep === 3 ? 'Hide Manage' : 'Manage'}</Text>
+              </TouchableOpacity>
+              {manageStep === 3 && (
+                <View style={{ marginTop: spacing[8] }}>
+                  <Text style={{ color: colors.text, marginBottom: spacing[4] }}>Source: {area?.source}</Text>
+                  <Text style={{ color: colors.text, marginBottom: spacing[4] }}>Elements: {area?.count}</Text>
+                  {area?.center && <Text style={{ color: colors.text, marginBottom: spacing[4] }}>Center: {area.center.lat.toFixed(4)}, {area.center.lon.toFixed(4)}</Text>}
+                  <Text style={{ color: colors.text, marginBottom: spacing[12] }}>{area?.fetchedAt ? `Cached ${Math.round((Date.now() - area.fetchedAt) / 3600000)} hours ago` : ''}</Text>
+                  
+                  <Button label="Re-cache my area" onPress={cacheArea} style={{ marginBottom: spacing[8] }} />
+                  {areaSeed && areaSeed.elements && areaSeed.elements.length >= 5 && (
+                    <Button label="Use bundled area" onPress={useBundledData} variant="secondary" style={{ marginBottom: spacing[8] }} />
+                  )}
+                  <Button label="Use sample data" onPress={useSampleData} variant="secondary" style={{ marginBottom: spacing[8] }} />
+                  <Notice variant="warn" text="Sample places are fake. Do not use for a real walk." />
+                  <View style={{ marginTop: spacing[8] }}>
+                    <Button label="Clear area cache" onPress={async () => {
+                      const ok = await confirmTwice({
+                        title: 'Clear area cache',
+                        firstMessage: 'This will remove the saved map area.',
+                        secondMessage: 'Are you sure?',
+                        confirmLabel: 'Clear'
+                      });
+                      if (ok) clearMyArea();
+                    }} variant="danger" />
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+        </Card>
+
+        {isSetupComplete && (
           <View>
-            <Button title="Cache my area (1.5 km)" onPress={cacheArea} disabled={modelStatus === 'In progress'} />
-            <View style={{ height: 10 }} />
-            <Button title="Use sample data instead" onPress={useSampleData} color="#f0ad4e" disabled={modelStatus === 'In progress'} />
+            <Notice variant="success" text="Ready. You can go offline now." />
+            <Button label="See today's missions" onPress={() => router.navigate('/')} style={{ marginTop: spacing[16] }} />
+            <Button label="Run speed test" onPress={() => router.push('/debug')} variant="secondary" style={{ marginTop: spacing[8], marginBottom: spacing[24] }} />
+            
+            <Card style={{ marginBottom: spacing[24] }}>
+              <Text style={[type.h2, { color: colors.text, marginBottom: spacing[12] }]}>Diagnostics</Text>
+              <Text style={[type.body, { color: colors.text }]}>Ready for airplane mode: {offlineReadiness}</Text>
+              <Text style={[type.body, { color: colors.text }]}>Model file size: {modelFileSize} MB</Text>
+              <Text style={[type.body, { color: colors.text }]}>Model loaded: {modelReady ? 'yes' : 'no'}</Text>
+              <Text style={[type.body, { color: colors.text }]}>Last generation speed: {lastTps ? `${lastTps.toFixed(2)} tps` : 'N/A'}</Text>
+              <Text style={[type.body, { color: colors.text }]}>Area source: {area?.source}</Text>
+              {area?.source === 'bundled' && (
+                <Text style={[type.caption, { color: colors.textMuted, fontStyle: 'italic' }]}>
+                  Using bundled map data (downloaded in advance with Overpass)
+                </Text>
+              )}
+              <Text style={[type.body, { color: colors.text }]}>Area element count: {area?.count}</Text>
+              {area?.breakdown && (
+                <Text style={[type.caption, { color: colors.textMuted }]}>
+                  {Object.entries(area.breakdown).map(([k, v]) => `${k} ${v}`).join(', ')}
+                </Text>
+              )}
+              <Text style={[type.body, { color: colors.text }]}>Tokens balance: {tokens}</Text>
+              <Text style={[type.body, { color: colors.text }]}>App version: 1.0.0</Text>
+            </Card>
+
+            
+
+            <Card style={{ marginBottom: spacing[32], borderColor: colors.danger, borderWidth: 1 }}>
+              <Text style={[type.h2, { color: colors.text, marginBottom: spacing[12] }]}>Reset and data</Text>
+              <Button label="Reset progress" onPress={async () => {
+                const ok = await confirmTwice({
+                  title: 'Reset progress',
+                  firstMessage: 'This will clear tokens, visited places, and mission history.',
+                  secondMessage: 'Are you sure? This cannot be undone.',
+                  confirmLabel: 'Reset'
+                });
+                if (ok) {
+                  await resetProgress();
+                }
+              }} variant="secondary" style={{ marginBottom: spacing[8] }} />
+              <Button label="Delete everything" onPress={async () => {
+                const ok = await confirmTwice({
+                  title: 'Delete everything',
+                  firstMessage: 'This will clear progress AND delete the AI model and map cache.',
+                  secondMessage: 'Are you ABSOLUTELY sure? You will lose all data and need to download everything again.',
+                  confirmLabel: 'Delete All'
+                });
+                if (ok) {
+                  await resetEverything();
+                }
+              }} variant="danger" />
+            </Card>
           </View>
         )}
       </View>
-
-      {isSetupComplete && (
-        <View style={styles.readyFooter}>
-          <Text style={styles.readyText}>Ready to Touch Grass!</Text>
-        </View>
-      )}
-    </ScrollView>
+    </Screen>
   );
 }
-
-const styles = StyleSheet.create({
-  container: { padding: 20 },
-  card: {
-    backgroundColor: '#ffffff',
-    padding: 15,
-    borderRadius: 8,
-    marginBottom: 20,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 1 }
-  },
-  stepTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 5 },
-  statusLine: { fontSize: 14, color: '#555', marginBottom: 15 },
-  sampleLabel: { color: '#d9534f', fontWeight: 'bold', marginTop: 5 },
-  readyFooter: { alignItems: 'center', marginVertical: 30 },
-  readyText: { fontSize: 24, fontWeight: 'bold', color: '#5cb85c' }
-});
