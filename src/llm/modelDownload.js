@@ -2,7 +2,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { CONFIG } from '../config';
 
 export const getModelUri = () => {
-  return `${FileSystem.documentDirectory}${CONFIG.MODEL_FILENAME}`;
+  return `${FileSystem.documentDirectory}${CONFIG.MODEL.fileName}`;
 };
 
 export const checkModelExists = async () => {
@@ -16,7 +16,7 @@ export const downloadModel = async (onProgress) => {
   if (exists) return uri;
 
   const downloadResumable = FileSystem.createDownloadResumable(
-    CONFIG.MODEL_URL,
+    CONFIG.MODEL.url,
     uri,
     {},
     (downloadProgress) => {
