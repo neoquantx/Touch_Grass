@@ -1,0 +1,12 @@
+{
+  "meta": {
+    "center": {
+      "lat": 12.3456,
+      "lon": 78.9012
+    },
+    "radius": 1000,
+    "fetchedAt": "2026-10-08T22:18:42.743Z",
+    "source": "bundled"
+  },
+  "elements": []
+}
