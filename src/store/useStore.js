@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import * as FileSystem from 'expo-file-system/legacy';
 import { CONFIG } from '../config.js';
-import { daysBetween } from '../utils/date.js';
+import { daysBetween, todayString, normalizeDateStr } from '../utils/date.js';
 
 const fileStorage = {
   getItem: async (name) => {
@@ -66,10 +66,13 @@ export const useStore = create(
       })),
       
       lastMissionDate: null,
-      setLastMissionDate: (dateStr) => set({ lastMissionDate: dateStr }),
+      setLastMissionDate: (dateStr) => set({ lastMissionDate: dateStr ? normalizeDateStr(dateStr) : null }),
       
       missions: null,
       setMissions: (missions) => set({ missions }),
+      
+      cameraExif: true,
+      setCameraExif: (cameraExif) => set({ cameraExif: !!cameraExif }),
       
       days: {},
       claimedBonuses: {},
@@ -122,8 +125,7 @@ export const useStore = create(
       
       setWalkState: (walkState) => set({ walk: walkState }),
       addWalkDistance: (addedM, seconds, ts) => set((state) => {
-        const d = new Date(ts);
-        const dateStr = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+        const dateStr = ts ? todayString(new Date(ts)) : todayString();
         const newDays = { ...state.days };
         if (!newDays[dateStr]) {
           newDays[dateStr] = { date: dateStr, missions: [], distanceM: 0, distanceRewardedM: 0, walkSeconds: 0, walkSessions: 0, tokensEarned: 0, tokensSpent: 0, bonuses: [] };
@@ -139,8 +141,7 @@ export const useStore = create(
       
       addBonus: (bonus) => set((state) => {
         if (state.claimedBonuses[bonus.key]) return state; // idempotent
-        const d = new Date(bonus.ts);
-        const dateStr = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+        const dateStr = bonus.ts ? todayString(new Date(bonus.ts)) : todayString();
         const newDays = { ...state.days };
         if (!newDays[dateStr]) {
           newDays[dateStr] = { date: dateStr, missions: [], distanceM: 0, distanceRewardedM: 0, walkSeconds: 0, walkSessions: 0, tokensEarned: 0, tokensSpent: 0, bonuses: [] };
@@ -157,13 +158,12 @@ export const useStore = create(
 
       completeMission: (id, updates) => set((state) => {
         if (!state.missions || !state.missions.items) return state;
-        const today = new Date();
-        const dateStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+        const dateStr = todayString();
         
         const mIndex = state.missions.items.findIndex(x => x.id === id);
         if (mIndex === -1) return state;
         const m = state.missions.items[mIndex];
-        if (m.status === 'done' || m.date !== dateStr) return state; // idempotent & date guard
+        if (m.status === 'done' || (m.date && normalizeDateStr(m.date) !== dateStr)) return state; // idempotent & date guard
         
         const updatedM = { ...m, status: 'done', completedAt: Date.now(), ...updates };
         
@@ -177,8 +177,6 @@ export const useStore = create(
           newDays[dateStr] = { date: dateStr, missions: [], distanceM: 0, distanceRewardedM: 0, walkSeconds: 0, walkSessions: 0, tokensEarned: 0, tokensSpent: 0, bonuses: [] };
         }
         
-        // Use describeTags/CATEGORY_LABELS dynamically instead of static here, or just save the category.
-        // Actually we only have element.category. We'll map it in UI, just save category here.
         newDays[dateStr] = { ...newDays[dateStr], missions: [...newDays[dateStr].missions, {
           id: updatedM.id, type: updatedM.type, title: updatedM.title, category: updatedM.element?.category,
           reward: updatedM.reward || 0, completedAt: updatedM.completedAt, proofUri: updatedM.photoUri || updatedM.proofUri,
@@ -240,8 +238,7 @@ export const useStore = create(
         }
         
         // update days[date]
-        const today = new Date();
-        const dateStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+        const dateStr = todayString();
         const newDays = { ...state.days };
         if (!newDays[dateStr]) {
           newDays[dateStr] = { date: dateStr, missions: [], distanceM: 0, distanceRewardedM: 0, walkSeconds: 0, walkSessions: 0, tokensEarned: 0, tokensSpent: 0, bonuses: [] };
@@ -260,11 +257,7 @@ export const useStore = create(
       }),
 
       pruneHistory: () => set((state) => {
-        
-        
-        const today = new Date();
-        const todayStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
-        
+        const todayStr = todayString();
         const newDays = { ...state.days };
         const keepDays = CONFIG.HISTORY.keepDays || 120;
         
@@ -275,6 +268,7 @@ export const useStore = create(
         }
         return { days: newDays };
       }),
+
 
       resetProgress: async () => {
         set({
@@ -304,7 +298,7 @@ export const useStore = create(
     }),
     {
       name: 'state',
-      version: 4,
+      version: 5,
       storage: createJSONStorage(() => fileStorage),
       partialize: (state) => {
         const { llmState, hasHydrated, corruptStateWarning, ...rest } = state;
@@ -318,8 +312,7 @@ export const useStore = create(
         if (version < 3) {
           state.ledger = state.ledger || [];
         }
-        if (version < 4) {
-          
+        if (version < 5) {
           state = migrateState(state);
         }
         return state;
@@ -329,7 +322,12 @@ export const useStore = create(
           console.warn('Hydration error:', error);
           if (state) state.setCorruptStateWarning(true);
         }
-        if (state) state.setHasHydrated(true);
+        if (state) {
+          const current = useStore.getState();
+          const normalized = migrateState(current);
+          useStore.setState(normalized);
+          state.setHasHydrated(true);
+        }
       }
     }
   )
