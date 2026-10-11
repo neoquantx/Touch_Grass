@@ -82,7 +82,14 @@ export const useStore = create(
       lastPhotoInfo: null,
       setLastPhotoInfo: (info) => set({ lastPhotoInfo: info }),
 
-      
+      unlockedBadges: {},
+      unlockBadge: (badgeId, badgeData) => set((state) => ({
+        unlockedBadges: { ...state.unlockedBadges, [badgeId]: badgeData || { unlockedAt: Date.now() } }
+      })),
+
+      companionPersona: 'nature',
+      setCompanionPersona: (persona) => set({ companionPersona: persona }),
+
       replaceMissionSlot: (type, mission) => set((state) => {
         if (!state.missions || !state.missions.items) return state;
         return {
@@ -182,10 +189,42 @@ export const useStore = create(
           reward: updatedM.reward || 0, completedAt: updatedM.completedAt, proofUri: updatedM.photoUri || updatedM.proofUri,
           lat: updatedM.element?.lat, lon: updatedM.element?.lon
         }]};
+
+        // Automatically record into Explorer's Field Journal
+        const journalItem = {
+          id: `journal_${updatedM.id}_${Date.now()}`,
+          missionId: updatedM.id,
+          type: updatedM.type,
+          title: updatedM.title,
+          category: updatedM.element?.category || (updatedM.type === 'LOOK' ? 'scavenger' : 'park'),
+          date: dateStr,
+          completedAt: updatedM.completedAt,
+          photoUri: updatedM.photoUri || updatedM.proofUri || null,
+          lat: updatedM.element?.lat ?? null,
+          lon: updatedM.element?.lon ?? null,
+          fact: updatedM.fact || null,
+          factSource: updatedM.factSource || null,
+          tags: updatedM.element?.tags || null,
+          note: ''
+        };
+
+        const existingJIndex = (state.journal || []).findIndex(j => j.missionId === updatedM.id);
+        let newJournal = [...(state.journal || [])];
+        if (existingJIndex >= 0) {
+          newJournal[existingJIndex] = {
+            ...newJournal[existingJIndex],
+            photoUri: journalItem.photoUri || newJournal[existingJIndex].photoUri,
+            fact: journalItem.fact !== null ? journalItem.fact : newJournal[existingJIndex].fact,
+            factSource: journalItem.factSource !== null ? journalItem.factSource : newJournal[existingJIndex].factSource
+          };
+        } else {
+          newJournal = [journalItem, ...newJournal].slice(0, 200);
+        }
         
         return {
           missions: newMissions,
-          days: newDays
+          days: newDays,
+          journal: newJournal
         };
       }),
 
@@ -216,8 +255,66 @@ export const useStore = create(
       
       journal: [],
       addJournalEntry: (entry) => set((state) => ({
-        journal: [entry, ...state.journal].slice(0, 100)
+        journal: [entry, ...(state.journal || [])].slice(0, 200)
       })),
+      updateJournalNote: (id, note, fallbackEntry = null) => set((state) => {
+        const cleanNote = typeof note === 'string' ? note.trim() : '';
+        const missionIdTarget = id && typeof id === 'string' && id.startsWith('legacy_')
+          ? id.slice(7)
+          : (fallbackEntry?.missionId || id);
+        
+        let newJournal = [...(state.journal || [])];
+        const jIdx = newJournal.findIndex(j => 
+          j.id === id || 
+          j.missionId === id || 
+          j.missionId === missionIdTarget || 
+          `legacy_${j.missionId}` === id ||
+          (fallbackEntry && (j.id === fallbackEntry.id || (j.missionId && j.missionId === fallbackEntry.missionId)))
+        );
+
+        if (jIdx >= 0) {
+          newJournal[jIdx] = { ...newJournal[jIdx], note: cleanNote };
+        } else if (fallbackEntry) {
+          const entryToInsert = {
+            ...fallbackEntry,
+            id: fallbackEntry.id || `journal_${missionIdTarget || Date.now()}`,
+            missionId: fallbackEntry.missionId || missionIdTarget,
+            note: cleanNote
+          };
+          newJournal = [entryToInsert, ...newJournal].slice(0, 200);
+        }
+
+        // Also sync note into state.days if mission exists there
+        const newDays = { ...state.days };
+        let daysChanged = false;
+        for (const [dateStr, day] of Object.entries(newDays)) {
+          if (day.missions && day.missions.length > 0) {
+            const mIdx = day.missions.findIndex(m => m.id === id || m.id === missionIdTarget);
+            if (mIdx >= 0 && day.missions[mIdx].note !== cleanNote) {
+              const updatedMissions = [...day.missions];
+              updatedMissions[mIdx] = { ...updatedMissions[mIdx], note: cleanNote };
+              newDays[dateStr] = { ...day, missions: updatedMissions };
+              daysChanged = true;
+            }
+          }
+        }
+
+        return {
+          journal: newJournal,
+          ...(daysChanged ? { days: newDays } : {})
+        };
+      }),
+      deleteJournalEntry: (id) => set((state) => {
+        const missionIdTarget = id && typeof id === 'string' && id.startsWith('legacy_') ? id.slice(7) : id;
+        return {
+          journal: (state.journal || []).filter(j => 
+            j.id !== id && 
+            j.missionId !== id && 
+            j.missionId !== missionIdTarget &&
+            `legacy_${j.missionId}` !== id
+          )
+        };
+      }),
       
       hasHydrated: false,
       setHasHydrated: (state) => set({ hasHydrated: state }),
@@ -278,6 +375,8 @@ export const useStore = create(
           ledger: [],
           ledgerCarry: 0,
           journal: [],
+          unlockedBadges: {},
+          companionPersona: 'nature',
           lastMissionDate: null,
           days: {},
           claimedBonuses: {},
