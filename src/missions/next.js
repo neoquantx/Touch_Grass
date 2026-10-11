@@ -1,8 +1,11 @@
 import { CATEGORY_LABELS, radiusByCategory } from './describe.js';
 import { LOOK_PROMPTS, shuffleArray, selectGoElement, selectLearnElement } from './generate.js';
+import { haversineMeters } from '../utils/geo.js';
+import { normalizeDateStr } from '../utils/date.js';
 
 export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, activeTargetIds, skippedIds, usedLookPrompts, doneCounts, cfg }) {
-  const id = `${dateStr}:${type}:${seq}`;
+  const normDateStr = normalizeDateStr(dateStr);
+  const id = `${normDateStr}:${type}:${seq}`;
   
   if (doneCounts && doneCounts[type] >= cfg.dailyCap[type]) {
     return {
@@ -18,7 +21,7 @@ export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, 
   }
   
   if (type === 'LOOK') {
-    let availablePrompts = LOOK_PROMPTS.filter(p => !usedLookPrompts.includes(p));
+    let availablePrompts = (LOOK_PROMPTS || []).filter(p => !usedLookPrompts.includes(p));
     if (availablePrompts.length === 0) {
       availablePrompts = LOOK_PROMPTS; // reset
     }
@@ -26,13 +29,22 @@ export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, 
     const description = "Take a photo of it as proof. Any place outdoors works.";
     return {
       id, type, prompt, elementId: null, element: null, target: null,
-      status: 'available', date: dateStr, title: `Find: ${prompt}`,
+      status: 'available', date: normDateStr, title: `Find: ${prompt}`,
       description, flavor: description
     };
   }
   
   const excludeIds = [...(visitedIds || []), ...(activeTargetIds || []), ...(skippedIds || [])];
-  const pool = (elements || []).filter(e => !excludeIds.includes(e.id));
+  
+  // Update distances from origin if available
+  const elementsWithDist = (elements || []).map(e => {
+    if (origin && e.lat !== undefined && e.lon !== undefined) {
+      return { ...e, distanceMeters: haversineMeters(origin.lat, origin.lon, e.lat, e.lon) };
+    }
+    return e;
+  });
+  
+  const pool = elementsWithDist.filter(e => !excludeIds.includes(e.id));
   
   if (pool.length === 0) {
     return { id, type, status: 'unavailable', reason: "No new places nearby. Re-cache your area in Setup." };
@@ -43,6 +55,9 @@ export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, 
   
   if (type === 'GO') {
     el = selectGoElement(shuffled);
+    if (!el) {
+      return { id, type, status: 'unavailable', reason: "No suitable park or green space found nearby." };
+    }
     const name = el.name || el.tags?.name;
     const title = name ? `Walk to ${name}` : `Walk to ${CATEGORY_LABELS[el.category] || 'a park'}`;
     const label = CATEGORY_LABELS[el.category] || 'A park';
@@ -52,12 +67,15 @@ export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, 
     
     return { 
       id, type, elementId: el.id, element: el, status: 'available', 
-      date: dateStr, title, description, flavor: description
+      date: normDateStr, title, description, flavor: description
     };
   }
   
   if (type === 'LEARN') {
     el = selectLearnElement(shuffled, null);
+    if (!el) {
+      return { id, type, status: 'unavailable', reason: "No historic place or noteworthy tree found nearby." };
+    }
     const name = el.name || el.tags?.name;
     const species = el.tags?.species;
     const title = name || (species ? `${species} tree` : CATEGORY_LABELS[el.category]) || 'A place';
@@ -67,7 +85,7 @@ export function nextMission({ dateStr, type, seq, origin, elements, visitedIds, 
     
     return { 
       id, type, elementId: el.id, element: el, status: 'available', 
-      date: dateStr, title, description, flavor: description
+      date: normDateStr, title, description, flavor: description
     };
   }
 }
