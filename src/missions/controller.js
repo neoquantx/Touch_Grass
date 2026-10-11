@@ -4,6 +4,10 @@ import { nextMission } from './next.js';
 import { computeBonuses } from '../progress/bonuses.js';
 import { CONFIG } from '../config.js';
 import { MISSION_GEN_VERSION } from './generate.js';
+import { loadAreaCache } from '../osm/cache.js';
+import { logEvent } from '../utils/eventLog.js';
+import { todayString, normalizeDateStr } from '../utils/date.js';
+import { haversineMeters } from '../utils/geo.js';
 
 let toastQueue = [];
 let onToastChange = null;
@@ -22,31 +26,188 @@ export function shiftToast() {
   if (onToastChange) onToastChange([...toastQueue]);
 }
 
-async function getBestFix() {
+export async function getBestFix() {
   try {
-    const fix = await getOriginFix(); // 8s timeout in getOriginFix
-    if (fix) return fix;
+    const fix = await getOriginFix();
+    if (fix && fix.lat !== undefined && fix.lon !== undefined) {
+      return { fix, source: 'gps' };
+    }
   } catch (e) {}
   
   const state = useStore.getState();
-  if (state.area && state.area.origin) {
-    return { lat: state.area.origin.lat, lon: state.area.origin.lon };
+  if (state.area) {
+    if (state.area.origin && state.area.origin.lat !== undefined && state.area.origin.lon !== undefined) {
+      return { fix: { lat: state.area.origin.lat, lon: state.area.origin.lon }, source: 'area.origin' };
+    }
+    if (state.area.center && state.area.center.lat !== undefined && state.area.center.lon !== undefined) {
+      return { fix: { lat: state.area.center.lat, lon: state.area.center.lon }, source: 'area.center' };
+    }
   }
   return null;
 }
 
+export async function getAreaElements() {
+  const state = useStore.getState();
+  if (!state.area) return [];
+  
+  let elements = state.area.elements || [];
+  if (elements.length === 0) {
+    try {
+      const cached = await loadAreaCache();
+      if (cached?.elements && cached.elements.length > 0) {
+        elements = cached.elements;
+        useStore.setState(s => ({
+          area: { ...s.area, elements }
+        }));
+      }
+    } catch (e) {
+      console.warn('loadAreaCache error in getAreaElements:', e);
+    }
+  }
+  
+  // if the area exists but elements are empty, retry the load once
+  if (elements.length === 0 && state.area) {
+    try {
+      const cached = await loadAreaCache();
+      if (cached?.elements && cached.elements.length > 0) {
+        elements = cached.elements;
+        useStore.setState(s => ({
+          area: { ...s.area, elements }
+        }));
+      }
+    } catch (e) {
+      console.warn('loadAreaCache retry error in getAreaElements:', e);
+    }
+  }
+  
+  return elements;
+}
+
+function logCandidateFilterCounts(type, elements, fix, originSource, visitedIds, activeTargetIds, skippedIds) {
+  if (type === 'LOOK') {
+    logEvent('generation', 'Generation for LOOK mission', {
+      type: 'LOOK',
+      originSource,
+      elementCount: 0
+    });
+    return;
+  }
+  
+  const total = elements.length;
+  const elementsWithDist = elements.map(e => {
+    if (fix && e.lat !== undefined && e.lon !== undefined) {
+      return { ...e, distanceMeters: haversineMeters(fix.lat, fix.lon, e.lat, e.lon) };
+    }
+    return e;
+  });
+  
+  // Distance range filter
+  let inDistanceRange = elementsWithDist;
+  if (type === 'GO') {
+    inDistanceRange = elementsWithDist.filter(e => 
+      (e.category === 'park' || e.category === 'garden' || e.category === 'forest') && 
+      (e.distanceMeters === undefined || e.distanceMeters <= 2000)
+    );
+  } else if (type === 'LEARN') {
+    inDistanceRange = elementsWithDist.filter(e => 
+      (e.category === 'historic' || e.category === 'tree' || e.name || e.tags?.name) &&
+      (e.distanceMeters === undefined || e.distanceMeters <= 2000)
+    );
+  }
+  
+  const distanceRangeCount = inDistanceRange.length;
+  const unvisitedCount = elementsWithDist.filter(e => !visitedIds.includes(e.id)).length;
+  const nonActiveCount = elementsWithDist.filter(e => !visitedIds.includes(e.id) && !activeTargetIds.includes(e.id)).length;
+  const nonSkippedCount = elementsWithDist.filter(e => !visitedIds.includes(e.id) && !activeTargetIds.includes(e.id) && !skippedIds.includes(e.id)).length;
+  
+  logEvent('generation', `Candidate filtering for ${type}`, {
+    type,
+    elementCount: total,
+    originSource,
+    candidateCounts: {
+      total,
+      distanceRange: distanceRangeCount,
+      visitedFilter: unvisitedCount,
+      activeFilter: nonActiveCount,
+      skippedFilter: nonSkippedCount
+    }
+  });
+}
+
+export async function recheckUnavailableMissions() {
+  const state = useStore.getState();
+  if (!state.missions || !state.missions.items) return;
+  
+  const unavailableSlots = state.missions.items.filter(m => m.status === 'unavailable');
+  if (unavailableSlots.length === 0) return;
+  
+  const best = await getBestFix();
+  if (!best || !best.fix) return;
+  const { fix, source: originSource } = best;
+  
+  const elements = await getAreaElements();
+  if (!elements || elements.length === 0) return;
+  
+  const dateStr = state.missions.date ? normalizeDateStr(state.missions.date) : todayString();
+  const cfg = { dailyCap: CONFIG.MISSIONS.dailyCap };
+  
+  for (const slot of unavailableSlots) {
+    const latestState = useStore.getState();
+    const activeTargetIds = latestState.missions.items
+      .filter(x => x.status !== 'done' && x.id !== slot.id)
+      .map(x => x.elementId)
+      .filter(Boolean);
+    
+    logCandidateFilterCounts(
+      slot.type,
+      elements,
+      fix,
+      originSource,
+      latestState.visitedIds || [],
+      activeTargetIds,
+      latestState.missions.skippedIds || []
+    );
+    
+    const seq = latestState.missions.seq[slot.type] || 0;
+    const replacement = nextMission({
+      dateStr,
+      type: slot.type,
+      seq,
+      origin: fix,
+      elements,
+      visitedIds: latestState.visitedIds || [],
+      activeTargetIds,
+      skippedIds: latestState.missions.skippedIds || [],
+      usedLookPrompts: latestState.missions.usedLookPrompts || [],
+      doneCounts: latestState.missions.doneCounts || {},
+      cfg
+    });
+    
+    if (replacement && replacement.status !== 'unavailable') {
+      latestState.replaceMissionSlot(slot.type, replacement);
+      logEvent('generation', `Recovered unavailable slot ${slot.type}`, {
+        id: replacement.id,
+        title: replacement.title
+      });
+    }
+  }
+}
+
 export async function ensureToday() {
   const state = useStore.getState();
-  const today = new Date();
-  const dateStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+  const dateStr = todayString();
   
   const missions = state.missions;
   
   if (!missions || missions.date !== dateStr || missions.generatorVersion !== MISSION_GEN_VERSION) {
-    const fix = await getBestFix();
-    if (!fix) return; // Cannot initialize without origin
+    const best = await getBestFix();
+    if (!best || !best.fix) {
+      logEvent('generation', 'ensureToday: Aborting, origin fix is null');
+      return;
+    }
+    const { fix, source: originSource } = best;
     
-    const elements = state.area?.elements || [];
+    const elements = await getAreaElements();
     const cfg = { dailyCap: CONFIG.MISSIONS.dailyCap };
     
     const newMissions = {
@@ -62,15 +223,27 @@ export async function ensureToday() {
     };
     
     for (const type of ['GO', 'LOOK', 'LEARN']) {
+      const activeTargetIds = newMissions.items.map(x => x.elementId).filter(Boolean);
+      logCandidateFilterCounts(
+        type,
+        elements,
+        fix,
+        originSource,
+        state.visitedIds || [],
+        activeTargetIds,
+        newMissions.skippedIds
+      );
+      
       const m = nextMission({
         dateStr, type, seq: 0, origin: fix, elements,
-        visitedIds: state.visitedIds,
-        activeTargetIds: newMissions.items.map(x => x.elementId).filter(Boolean),
+        visitedIds: state.visitedIds || [],
+        activeTargetIds,
         skippedIds: newMissions.skippedIds,
         usedLookPrompts: newMissions.usedLookPrompts,
         doneCounts: newMissions.doneCounts,
         cfg
       });
+      
       if (m.status !== 'unavailable') {
         newMissions.items.push(m);
         newMissions.seq[type] = 1;
@@ -81,68 +254,65 @@ export async function ensureToday() {
     }
     
     useStore.getState().setMissions(newMissions);
+  } else {
+    // If missions exist for today, re-evaluate any unavailable slot
+    await recheckUnavailableMissions();
   }
 }
 
 export async function onMissionCompleted(mission) {
-  // spawn replacement
   const state = useStore.getState();
-  const fix = await getBestFix();
+  const best = await getBestFix();
+  const fix = best?.fix || state.area?.origin || state.area?.center || null;
+  const originSource = best?.source || 'fallback';
   const cfg = { dailyCap: CONFIG.MISSIONS.dailyCap };
   
+  const elements = await getAreaElements();
   const nextSeq = (state.missions.seq[mission.type] || 0) + 1;
-  const newM = nextMission({
-    dateStr: state.missions.date,
-    type: mission.type,
-    seq: nextSeq,
-    origin: fix,
-    elements: state.area?.elements || [],
-    visitedIds: state.visitedIds,
-    activeTargetIds: state.missions.items.filter(x => x.status !== 'done' && x.id !== mission.id).map(x => x.elementId).filter(Boolean),
-    skippedIds: state.missions.skippedIds,
-    usedLookPrompts: state.missions.usedLookPrompts,
-    doneCounts: state.missions.doneCounts,
-    cfg
-  });
-  
-  // Actually, wait, doneCounts might have been incremented by completeMission synchronously, but `state` here might be stale if we didn't re-get it.
-  // Better to useStore.getState() again right before nextMission just in case.
   const latestState = useStore.getState();
   
-  const reallyNewM = nextMission({
-    dateStr: latestState.missions.date,
+  const activeTargetIds = latestState.missions.items
+    .filter(x => x.status !== 'done' && x.id !== mission.id)
+    .map(x => x.elementId)
+    .filter(Boolean);
+  
+  logCandidateFilterCounts(
+    mission.type,
+    elements,
+    fix,
+    originSource,
+    latestState.visitedIds || [],
+    activeTargetIds,
+    latestState.missions.skippedIds || []
+  );
+  
+  const dateStr = latestState.missions.date ? normalizeDateStr(latestState.missions.date) : todayString();
+  const replacement = nextMission({
+    dateStr,
     type: mission.type,
     seq: nextSeq,
     origin: fix,
-    elements: latestState.area?.elements || [],
-    visitedIds: latestState.visitedIds,
-    activeTargetIds: latestState.missions.items.filter(x => x.status !== 'done' && x.id !== mission.id).map(x => x.elementId).filter(Boolean),
-    skippedIds: latestState.missions.skippedIds,
-    usedLookPrompts: latestState.missions.usedLookPrompts,
-    doneCounts: latestState.missions.doneCounts,
+    elements,
+    visitedIds: latestState.visitedIds || [],
+    activeTargetIds,
+    skippedIds: latestState.missions.skippedIds || [],
+    usedLookPrompts: latestState.missions.usedLookPrompts || [],
+    doneCounts: latestState.missions.doneCounts || {},
     cfg
   });
   
-  // replace the slot (which is now done, so it's technically still there in index.js we show it in history, not active slots)
-  // wait, the old completed mission shouldn't be in `missions.items` if it was moved to history?
-  // "convert any done mission with completedAt on its own date into days[date].missions" - the migration does that, but what about active runtime?
-  // Our completeMission in useStore keeps the done mission in `missions.items`.
-  // The UI active slots will filter `status !== 'done'`.
-  // And `replaceMissionSlot` replaces by type, so the old one is removed from `missions.items`! Yes.
+  latestState.replaceMissionSlot(mission.type, replacement);
   
-  // So we first call replaceMissionSlot
-  latestState.replaceMissionSlot(mission.type, reallyNewM);
-  
-  // Update seq and usedLookPrompts in store directly using set
   useStore.setState(s => ({
     missions: {
       ...s.missions,
       seq: { ...s.missions.seq, [mission.type]: nextSeq },
-      usedLookPrompts: reallyNewM.prompt ? [...s.missions.usedLookPrompts, reallyNewM.prompt] : s.missions.usedLookPrompts
+      usedLookPrompts: replacement.prompt ? [...s.missions.usedLookPrompts, replacement.prompt] : s.missions.usedLookPrompts
     }
   }));
   
   evaluateProgress();
+  await recheckUnavailableMissions();
 }
 
 export async function skip(mission) {
@@ -151,26 +321,41 @@ export async function skip(mission) {
   const type = mission.type;
   
   if ((state.missions.skips[type] || 0) >= CONFIG.MISSIONS.skipsPerTypePerDay) {
-    return; // cannot skip
+    return;
   }
   
   state.skipMission(mission.id);
   
   const latestState = useStore.getState();
-  const fix = await getBestFix();
+  const best = await getBestFix();
+  const fix = best?.fix || latestState.area?.origin || latestState.area?.center || null;
+  const originSource = best?.source || 'fallback';
+  const elements = await getAreaElements();
   const nextSeq = (latestState.missions.seq[type] || 0) + 1;
   
+  const activeTargetIds = latestState.missions.items.map(x => x.elementId).filter(Boolean);
+  logCandidateFilterCounts(
+    type,
+    elements,
+    fix,
+    originSource,
+    latestState.visitedIds || [],
+    activeTargetIds,
+    latestState.missions.skippedIds || []
+  );
+  
+  const dateStr = latestState.missions.date ? normalizeDateStr(latestState.missions.date) : todayString();
   const replacement = nextMission({
-    dateStr: latestState.missions.date,
+    dateStr,
     type: type,
     seq: nextSeq,
     origin: fix,
-    elements: latestState.area?.elements || [],
-    visitedIds: latestState.visitedIds,
-    activeTargetIds: latestState.missions.items.map(x => x.elementId).filter(Boolean),
-    skippedIds: latestState.missions.skippedIds,
-    usedLookPrompts: latestState.missions.usedLookPrompts,
-    doneCounts: latestState.missions.doneCounts,
+    elements,
+    visitedIds: latestState.visitedIds || [],
+    activeTargetIds,
+    skippedIds: latestState.missions.skippedIds || [],
+    usedLookPrompts: latestState.missions.usedLookPrompts || [],
+    doneCounts: latestState.missions.doneCounts || {},
     cfg
   });
   
@@ -183,12 +368,13 @@ export async function skip(mission) {
       usedLookPrompts: replacement.prompt ? [...s.missions.usedLookPrompts, replacement.prompt] : s.missions.usedLookPrompts
     }
   }));
+  
+  await recheckUnavailableMissions();
 }
 
 export function evaluateProgress() {
   const state = useStore.getState();
-  const today = new Date();
-  const todayStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+  const todayStr = todayString();
   
   const cfg = { goals: CONFIG.GOALS, streak: CONFIG.STREAK };
   const newBonuses = computeBonuses({
