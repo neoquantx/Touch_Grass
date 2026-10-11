@@ -8,6 +8,9 @@ export function migrateState(state) {
   if (newState.ledgerCarry === undefined) newState.ledgerCarry = 0;
   if (!newState.walk) newState.walk = null;
   if (newState.cameraExif === undefined) newState.cameraExif = true;
+  if (!newState.unlockedBadges) newState.unlockedBadges = {};
+  if (!newState.companionPersona) newState.companionPersona = 'nature';
+  if (!newState.journal) newState.journal = [];
   newState.lastTps = null;
   
   // 1. Convert old array missions into history
