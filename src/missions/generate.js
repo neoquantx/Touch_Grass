@@ -98,7 +98,7 @@ export function generateMissions(elements, visitedIds = [], currentDateStr = '')
     });
   }
   
-  const prompt = LOOK_PROMPTS[seed % LOOK_PROMPTS.length];
+  const prompt = LOOK_PROMPTS[Math.abs(seed) % LOOK_PROMPTS.length];
   const lookDescription = "Take a photo of it as proof. Any place outdoors works.";
   missions.push({ 
     id: `LOOK-${currentDateStr}-prompt`, 
