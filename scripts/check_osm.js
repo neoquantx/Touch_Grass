@@ -1,5 +1,5 @@
 import { haversineMeters, offsetLatLon } from '../src/utils/geo.js';
-import { normalizeElements } from '../src/osm/overpass.js';
+import { normalizeElements, buildQuery } from '../src/osm/overpass.js';
 
 console.log('--- Testing haversineMeters ---');
 // New York to London
@@ -30,3 +30,14 @@ console.log(`Normalized elements: ${normalized.length}. Expected: 2.`);
 normalized.forEach(el => {
   console.log(`- [${el.category}] ${el.name || 'unnamed'} (ID: ${el.id}) at distance ${el.distanceMeters.toFixed(1)}m`);
 });
+
+console.log('\n--- Testing buildQuery ---');
+const qFull = buildQuery(48.8566, 2.3522, 1000, 'full');
+const qLight = buildQuery(48.8566, 2.3522, 1000, 'light');
+
+if (!qFull.includes('timeout:25')) throw new Error('full query missing timeout:25');
+if (!qFull.includes('out center tags qt')) throw new Error('full query missing out center tags qt');
+if (!qLight.includes('timeout:25')) throw new Error('light query missing timeout:25');
+if (!qLight.includes('out center tags qt')) throw new Error('light query missing out center tags qt');
+console.log('buildQuery tests pass.');
+console.log('check_osm.js PASSED');
