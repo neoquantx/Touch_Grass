@@ -27,7 +27,8 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test": "node scripts/check_imports.js && node scripts/check_osm.js && node scripts/check_progress.js && node scripts/check_missions.js && node scripts/check_badges.js && node scripts/check_accounting.js && node scripts/check_journal_toast.js && node scripts/check_grounding.js"
   },
   "private": true
 }
