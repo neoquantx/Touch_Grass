@@ -19,7 +19,7 @@ import {
   readPendingProof,
   sanitizeProofId
 } from '../location/checkin.js';
-import { haversineMeters } from '../utils/geo.js';
+import { haversineMeters, calculateBearing } from '../utils/geo.js';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import { useStore } from '../store/useStore.js';
@@ -44,7 +44,19 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
   
   const [displayDistance, setDisplayDistance] = useState(mission.element?.distanceMeters);
   const [distanceRefreshedAt, setDistanceRefreshedAt] = useState(null);
+  const [bearing, setBearing] = useState(null);
   const [cameraWatchdogTriggered, setCameraWatchdogTriggered] = useState(false);
+
+  useEffect(() => {
+    if (mission.element?.lat !== undefined && mission.element?.lon !== undefined) {
+      const area = useStore.getState().area;
+      const refPoint = area?.origin || area?.center;
+      if (refPoint?.lat !== undefined && refPoint?.lon !== undefined) {
+        const b = calculateBearing(refPoint.lat, refPoint.lon, mission.element.lat, mission.element.lon);
+        if (b) setBearing(b);
+      }
+    }
+  }, [mission.element?.lat, mission.element?.lon]);
 
   const watchdogTimerRef = useRef(null);
   const isCameraPendingRef = useRef(false);
@@ -59,20 +71,23 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
   const isToday = lastMissionDate === mission.date;
   
   let typeColor = colors.go;
-  let typeSoft = colors.primarySoft;
+  let typeSoft = colors.goSoft;
   let glyph = 'walk';
   let buttonLabel = 'Check in here';
+  let buttonIcon = 'walk';
   
   if (mission.type === 'LOOK') {
     typeColor = colors.look;
-    typeSoft = '#D6E4F0';
-    glyph = 'eye';
+    typeSoft = colors.lookSoft;
+    glyph = 'camera';
     buttonLabel = 'Take proof photo';
+    buttonIcon = 'camera';
   } else if (mission.type === 'LEARN') {
     typeColor = colors.learn;
-    typeSoft = '#E8DAF4';
+    typeSoft = colors.learnSoft;
     glyph = 'book';
     buttonLabel = 'Check in here';
+    buttonIcon = 'book';
   }
   
   if (isDone) {
@@ -501,18 +516,36 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
   const refreshDistance = async () => {
     try {
       const fix = await getOriginFix();
-      if (fix && mission.element) {
+      if (fix && mission.element?.lat !== undefined && mission.element?.lon !== undefined) {
         const d = haversineMeters(fix.lat, fix.lon, mission.element.lat, mission.element.lon);
         setDisplayDistance(d);
+        const b = calculateBearing(fix.lat, fix.lon, mission.element.lat, mission.element.lon);
+        if (b) setBearing(b);
         setDistanceRefreshedAt(Date.now());
       }
     } catch(e) {}
   };
   
   const navigateToPlace = () => {
+    if (!mission.element?.lat || !mission.element?.lon) return;
     const { lat, lon } = mission.element;
-    const url = `geo:${lat},${lon}?q=${lat},${lon}(${encodeURIComponent(title)})`;
-    Linking.openURL(url).catch(() => setError("No navigation app installed"));
+    const cleanTitle = encodeURIComponent(title || 'Mission Spot');
+    const url = Platform.select({
+      ios: `maps:0,0?q=${cleanTitle}&ll=${lat},${lon}`,
+      android: `geo:${lat},${lon}?q=${lat},${lon}(${cleanTitle})`,
+      default: `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`
+    });
+    Linking.canOpenURL(url).then(supported => {
+      if (supported) {
+        return Linking.openURL(url);
+      } else {
+        return Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lon}`);
+      }
+    }).catch(() => {
+      Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lon}`).catch(() => {
+        setError("Could not open maps navigation");
+      });
+    });
   };
 
   let title = mission.title;
@@ -559,42 +592,128 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
   const opacity = isUnavailable ? 0.6 : 1;
   
   return (
-    <Card style={{ marginBottom: spacing[16], opacity }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[12] }}>
-        <IconCircle name={glyph} color={typeColor} bgColor={typeSoft} />
-        <View style={{ marginLeft: spacing[12], flex: 1, minWidth: 0 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: spacing[4] }}>
-            <Chip label={isDone ? 'DONE' : mission.type} bgColor={typeSoft} textColor={typeColor} />
-            {isDone && <Text style={[type.label, { color: colors.success, flexShrink: 1, flexWrap: 'wrap' }]}>+{rewardTokens} tokens earned</Text>}
+    <Card
+      style={{
+        marginBottom: spacing[16],
+        opacity,
+        borderColor: isDone ? colors.successBorder : colors.borderSubtle
+      }}
+      variant={isDone ? 'flat' : 'default'}
+    >
+      {/* Card Header */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', marginBottom: spacing[12] }}>
+        <IconCircle
+          name={glyph}
+          color={typeColor}
+          bgColor={typeSoft}
+          size={44}
+          style={{ marginRight: spacing[12] }}
+        />
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+            <Chip
+              label={isDone ? 'DONE' : mission.type}
+              bgColor={typeSoft}
+              textColor={typeColor}
+              size="small"
+            />
+            {isDone ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.successSoft, paddingHorizontal: spacing[8], paddingVertical: 2, borderRadius: radius.pill }}>
+                <Ionicons name="checkmark" size={12} color={colors.success} style={{ marginRight: 3 }} />
+                <Text style={[type.label, { color: colors.success, fontSize: 10 }]}>+{rewardTokens} TOKENS</Text>
+              </View>
+            ) : (
+              <Chip
+                label={`+${rewardTokens}`}
+                bgColor={colors.tokenBg}
+                textColor={colors.tokenText}
+                icon={<Ionicons name="flash" size={12} color={colors.tokenText} />}
+                size="small"
+              />
+            )}
           </View>
-          <Text style={[type.h2, { color: colors.text, marginTop: spacing[4], flexShrink: 1, flexWrap: 'wrap' }]} numberOfLines={1}>
+          <Text
+            style={[
+              type.h2,
+              { color: colors.text, marginTop: 2, flexShrink: 1, flexWrap: 'wrap' }
+            ]}
+            numberOfLines={2}
+          >
             {title}
           </Text>
         </View>
       </View>
       
-      <Text style={[type.body, { color: colors.textMuted, marginBottom: spacing[12] }]}>
+      {/* Description */}
+      <Text style={[type.body, { color: colors.textMuted, fontSize: 14, lineHeight: 21, marginBottom: spacing[12] }]}>
         {description}
       </Text>
       
+      {/* Distance, Grass Compass, and Proximity Radar Info */}
       {!isDone && !isUnavailable && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[16], flexWrap: 'wrap', gap: spacing[8] }}>
-          <Chip label={`+${rewardTokens} tokens`} bgColor={colors.tokenBg} textColor={colors.tokenText} icon={<Ionicons name="flash" size={14} color={colors.tokenText} />} />
-          {(mission.type === 'GO' || mission.type === 'LEARN') && displayDistance !== undefined && (
-            <Text style={[type.caption, { color: colors.textMuted, flexShrink: 1, flexWrap: 'wrap' }]}>
-              about {Math.round(displayDistance)} m away{distanceRefreshedAt ? ' (updated just now)' : ''}
-            </Text>
-          )}
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing[14], flexWrap: 'wrap', gap: spacing[8] }}>
+          {(mission.type === 'GO' || mission.type === 'LEARN') && displayDistance !== undefined && (() => {
+            const radiusThreshold = mission.element ? radiusByCategory(mission.element.category) : 60;
+            const inRange = displayDistance <= radiusThreshold;
+            const isNear = displayDistance <= 300;
+
+            const radarBg = inRange ? colors.successSoft : isNear ? colors.warnSoft : colors.surfaceAlt;
+            const radarColor = inRange ? colors.success : isNear ? colors.warnText : colors.textSecondary;
+            const radarBorder = inRange ? colors.successBorder : isNear ? colors.warnBorder : colors.borderSubtle;
+            const radarIcon = inRange ? 'radio-button-on' : isNear ? 'walk-outline' : 'compass-outline';
+            const radarText = inRange
+              ? 'In check-in range! 🎯'
+              : isNear
+              ? `Getting closer (${Math.round(displayDistance)}m) ⚡`
+              : `Far (${Math.round(displayDistance)}m) 🧭`;
+
+            return (
+              <>
+                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primarySoft, paddingHorizontal: spacing[10], paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.primarySoftBorder }}>
+                  <Ionicons name="navigate" size={12} color={colors.primary} style={{ marginRight: 4 }} />
+                  <Text style={[type.captionBold, { color: colors.primary, fontSize: 11 }]}>
+                    {bearing ? `${bearing.cardinal} ${bearing.arrow} · ` : ''}{Math.round(displayDistance)} m away
+                  </Text>
+                  {distanceRefreshedAt ? (
+                    <Text style={[type.caption, { color: colors.primary, fontSize: 10, marginLeft: 3 }]}>
+                      (live)
+                    </Text>
+                  ) : null}
+                </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: radarBg, paddingHorizontal: spacing[10], paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: radarBorder }}>
+                  <Ionicons name={radarIcon} size={12} color={radarColor} style={{ marginRight: 4 }} />
+                  <Text style={[type.captionBold, { color: radarColor, fontSize: 11 }]}>
+                    {radarText}
+                  </Text>
+                </View>
+              </>
+            );
+          })()}
         </View>
       )}
       
+      {/* Secondary Actions for GO / LEARN */}
       {!isDone && (mission.type === 'GO' || mission.type === 'LEARN') && !isUnavailable && (
-         <View style={{ flexDirection: 'row', marginBottom: spacing[16], flexWrap: 'wrap', gap: spacing[8] }}>
-           <Button variant="secondary" size="small" label="Navigate" onPress={navigateToPlace} />
-           <Button variant="ghost" size="small" label="Refresh distance" onPress={refreshDistance} />
-         </View>
+        <View style={{ flexDirection: 'row', marginBottom: spacing[16], flexWrap: 'wrap', gap: spacing[8] }}>
+          <Button
+            variant="secondary"
+            size="small"
+            label="Navigate"
+            icon={<Ionicons name="navigate-outline" size={14} color={colors.text} />}
+            onPress={navigateToPlace}
+          />
+          <Button
+            variant="ghost"
+            size="small"
+            label="Refresh distance"
+            icon={<Ionicons name="sync-outline" size={14} color={colors.textMuted} />}
+            onPress={refreshDistance}
+          />
+        </View>
       )}
 
+      {/* Unavailable State */}
       {isUnavailable && (
         <View style={{ marginTop: spacing[8] }}>
           <Notice variant="warn" text={mission.reason || "No suitable places found nearby."} />
@@ -617,10 +736,12 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
         </View>
       )}
       
+      {/* Action Button & Proof Watchdogs */}
       {!isDone && !isUnavailable && (
         <View>
           <Button 
             label={(loading || ['saving', 'locating', 'completing'].includes(flow.state)) ? loadingText : buttonLabel} 
+            icon={!(loading || ['saving', 'locating', 'completing'].includes(flow.state)) && <Ionicons name={buttonIcon} size={18} color={colors.onPrimary} />}
             onPress={() => handleAction(false)} 
             loading={loading || ['saving', 'locating', 'completing'].includes(flow.state)}
           />
@@ -688,31 +809,42 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
         </View>
       )}
       
+      {/* Done State Proof Thumbnail */}
       {isDone && (mission.type === 'LOOK' || mission.type === 'LEARN') && mission.photoUri && (
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: spacing[8] }}>
-          <TouchableOpacity onPress={() => setViewerOpen(true)}>
-            <Image source={{ uri: mission.photoUri }} style={{ width: 56, height: 56, borderRadius: radius[12], marginRight: spacing[12] }} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: spacing[12], padding: spacing[10], backgroundColor: colors.surfaceAlt, borderRadius: radius[14] }}>
+          <TouchableOpacity onPress={() => setViewerOpen(true)} activeOpacity={0.85}>
+            <View style={{ position: 'relative' }}>
+              <Image source={{ uri: mission.photoUri }} style={{ width: 56, height: 56, borderRadius: radius[10] }} />
+              <View style={{ position: 'absolute', bottom: 3, right: 3, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 20, height: 20, alignItems: 'center', justifyContent: 'center' }}>
+                <Ionicons name="expand" size={12} color="#FFF" />
+              </View>
+            </View>
           </TouchableOpacity>
-          <View style={{ flex: 1, flexShrink: 1, minWidth: 0 }}>
-            <Text style={[type.caption, { color: colors.textMuted, flexShrink: 1, flexWrap: 'wrap' }]}>Proof photo (not image-checked)</Text>
+          <View style={{ flex: 1, flexShrink: 1, minWidth: 0, marginLeft: spacing[12] }}>
+            <Text style={[type.captionBold, { color: colors.text }]}>Verified photo proof</Text>
+            <Text style={[type.caption, { color: colors.textMuted, fontSize: 11 }]}>Stored locally on device</Text>
             {isToday && (
-              <Button variant="ghost" size="small" label="Replace photo" onPress={() => handleAction(true)} style={{ marginTop: spacing[4] }} />
+              <Button variant="ghost" size="small" label="Replace photo" onPress={() => handleAction(true)} style={{ alignSelf: 'flex-start', minHeight: 28, paddingVertical: 2, paddingHorizontal: 0, marginTop: 2 }} />
             )}
           </View>
         </View>
       )}
       
+      {/* Learn Fact Box */}
       {isDone && mission.type === 'LEARN' && (
-        <View style={{ marginTop: spacing[12], backgroundColor: colors.surfaceAlt, borderRadius: radius[12], padding: spacing[12] }}>
+        <View style={{ marginTop: spacing[12], backgroundColor: colors.surfaceAlt, borderRadius: radius[14], padding: spacing[12], borderWidth: 1, borderColor: colors.borderSubtle }}>
           {mission.fact ? (
-            <>
-              <Text style={[type.body, { color: colors.text, marginBottom: spacing[8] }]}>{mission.fact}</Text>
-              <Text style={[type.caption, { color: colors.textMuted, marginBottom: spacing[8] }]}>AI summary from OpenStreetMap tags, written on-device</Text>
-            </>
+            <View style={{ marginBottom: spacing[8] }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 4 }}>
+                <Ionicons name="sparkles" size={14} color={colors.learn} style={{ marginRight: 6 }} />
+                <Text style={[type.label, { color: colors.learn, fontSize: 10 }]}>ON-DEVICE AI SUMMARY</Text>
+              </View>
+              <Text style={[type.body, { color: colors.text, fontSize: 14, lineHeight: 20 }]}>{mission.fact}</Text>
+            </View>
           ) : null}
-          <Text style={[type.label, { color: colors.textMuted, marginBottom: spacing[4] }]}>Source: OpenStreetMap</Text>
+          <Text style={[type.label, { color: colors.textMuted, fontSize: 10, marginBottom: 4 }]}>OPENSTREETMAP FACTS</Text>
           {describeTags(mission.element.tags).map((line, i) => (
-            <Text key={i} style={[type.caption, { color: colors.textMuted }]}>{line}</Text>
+            <Text key={i} style={[type.caption, { color: colors.textSecondary, marginBottom: 2 }]}>• {line}</Text>
           ))}
         </View>
       )}
@@ -723,7 +855,7 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
           <Image source={{ uri: flow.photo?.uri || flow.photo }} style={{ flex: 1, resizeMode: 'contain' }} />
           <View style={{ position: 'absolute', bottom: 40, left: 20, right: 20, flexDirection: 'column', gap: 12 }}>
             {isReviewDark ? (
-              <View style={{ backgroundColor: colors.surface, padding: spacing[16], borderRadius: radius[12] }}>
+              <View style={{ backgroundColor: colors.surface, padding: spacing[16], borderRadius: radius[20] }}>
                 <Notice variant="warn" text="This photo looks very dark. Retake it?" />
                 <Button label="Retake" onPress={() => {
                   dispatchFlow({ type: PROOF_EVENTS.RETAKE });
@@ -735,8 +867,8 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
                 }} style={{ marginTop: spacing[8] }} />
               </View>
             ) : (
-              <View>
-                <Text style={[type.label, { color: '#FFF', textAlign: 'center', marginBottom: spacing[12], textShadowColor: 'rgba(0,0,0,0.8)', textShadowOffset: {width: 0, height: 1}, textShadowRadius: 3 }]}>Proof photo (not image-checked)</Text>
+              <View style={{ backgroundColor: 'rgba(23, 34, 28, 0.85)', padding: spacing[16], borderRadius: radius[24], borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' }}>
+                <Text style={[type.label, { color: '#FFF', textAlign: 'center', marginBottom: spacing[12], letterSpacing: 1 }]}>PROOF PHOTO PREVIEW</Text>
                 <Button label="Use this photo" onPress={() => {
                   dispatchFlow({ type: PROOF_EVENTS.USE });
                   finalizeProof({ mission, photo: flow.photo, mode: isReplaceMode ? 'replace' : 'complete', acceptDark: false, fromStage: 'saving' });
@@ -759,8 +891,8 @@ export function MissionCard({ mission, onComplete, recoveredProof, onClearRecove
       <Modal visible={viewerOpen} transparent={false} animationType="fade">
         <View style={{ flex: 1, backgroundColor: '#000' }}>
           <Image source={{ uri: mission.photoUri }} style={{ flex: 1, resizeMode: 'contain' }} />
-          <TouchableOpacity onPress={() => setViewerOpen(false)} style={{ position: 'absolute', top: 50, right: 20, padding: 10 }}>
-            <Ionicons name="close" size={32} color="#FFF" />
+          <TouchableOpacity onPress={() => setViewerOpen(false)} style={{ position: 'absolute', top: 50, right: 20, width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' }}>
+            <Ionicons name="close" size={24} color="#FFF" />
           </TouchableOpacity>
         </View>
       </Modal>
