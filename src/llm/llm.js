@@ -58,13 +58,16 @@ export const generate = async ({ messages, maxTokens = 200, onToken, shouldStop 
   );
   
   const seconds = (Date.now() - start) / 1000;
-  const tps = seconds > 0 ? tokenCount / seconds : 0;
+  // Decode-only generation rate from llama.rn timings (same measure as benchmark), with fallback
+  const decodeTps = result?.timings?.predicted_per_second;
+  const tps = (decodeTps && decodeTps > 0) ? decodeTps : (seconds > 0 ? tokenCount / seconds : 0);
   
   return {
     text: result.text || text,
     tokenCount,
     seconds,
-    tps
+    tps,
+    predicted_per_second: decodeTps
   };
 };
 
