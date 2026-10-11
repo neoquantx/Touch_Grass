@@ -19,6 +19,7 @@ export function shuffleArray(array, seed) {
 
 import { CATEGORY_LABELS, radiusByCategory } from './describe.js';
 import { FEATURES } from '../config.js';
+import { todayString, normalizeDateStr } from '../utils/date.js';
 export const MISSION_GEN_VERSION = 1;
 
 export const LOOK_PROMPTS = [
@@ -54,8 +55,9 @@ export function generateMissions(elements, visitedIds = [], currentDateStr = '')
   if (!elements || elements.length === 0) return [];
   
   if (!currentDateStr) {
-    const today = new Date();
-    currentDateStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+    currentDateStr = todayString();
+  } else {
+    currentDateStr = normalizeDateStr(currentDateStr);
   }
   
   // Create a seed from date string
