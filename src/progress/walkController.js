@@ -4,6 +4,7 @@ import { useStore } from '../store/useStore.js';
 import { CONFIG } from '../config.js';
 import { createWalkState, accumulateFix } from './distance.js';
 import { evaluateProgress, pushToast } from '../missions/controller.js';
+import { todayString } from '../utils/date.js';
 
 let sub = null;
 let walkState = createWalkState();
@@ -25,8 +26,7 @@ function flushToStore() {
     store.addWalkDistance(liveData.distanceM, liveData.seconds, Date.now());
     
     // Check rewards
-    const today = new Date();
-    const dateStr = `${today.getFullYear()}-${today.getMonth() + 1}-${today.getDate()}`;
+    const dateStr = todayString();
     const dayData = store.days[dateStr];
     if (dayData) {
       const rewM = dayData.distanceRewardedM || 0;
