@@ -2,6 +2,8 @@ import { useStore } from '../store/useStore.js';
 import { getOriginFix } from '../location/checkin.js';
 import { nextMission } from './next.js';
 import { computeBonuses } from '../progress/bonuses.js';
+import { evaluateBadges } from '../progress/badges.js';
+import { computeStreak } from '../progress/streak.js';
 import { CONFIG } from '../config.js';
 import { MISSION_GEN_VERSION } from './generate.js';
 import { loadAreaCache } from '../osm/cache.js';
@@ -389,5 +391,24 @@ export function evaluateProgress() {
     state.addLedgerEntry(bonus.amount, bonus.reason);
     state.addTokens(bonus.amount);
     pushToast({ message: `+${bonus.amount} tokens. ${bonus.reason}` });
+  }
+
+  // Evaluate achievements & badges
+  const streakInfo = computeStreak(state.days || {}, todayStr, CONFIG.STREAK);
+  const { newlyUnlocked } = evaluateBadges({
+    days: state.days || {},
+    journal: state.journal || [],
+    ledger: state.ledger || [],
+    unlockedBadges: state.unlockedBadges || {},
+    streakInfo
+  });
+
+  for (const badge of newlyUnlocked) {
+    state.unlockBadge(badge.id, { unlockedAt: badge.unlockedAt, reward: badge.reward, title: badge.title });
+    if (badge.reward > 0) {
+      state.addLedgerEntry(badge.reward, `Badge: ${badge.title}`);
+      state.addTokens(badge.reward);
+    }
+    pushToast({ message: `🏆 Badge: ${badge.title} (+${badge.reward} tokens)!` });
   }
 }
