@@ -1,5 +1,7 @@
 export const CONFIG = {
   PHOTO: { minBytes: 8000 },
+  // Benchmark result on device (release build, Qwen2.5-0.5B Q4, 64-token completion):
+  // 2 threads 21.58, 3 threads 29.95, 4 threads 37.76, 5 threads 22.74, 6 threads 26.83 tokens/sec.
   LLM: { nThreads: 4 },
   MODEL: {
     name: 'Qwen2.5-0.5B-Instruct',
