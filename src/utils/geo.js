@@ -22,3 +22,37 @@ export function offsetLatLon(lat, lon, dxMeters, dyMeters) {
 
   return { lat: newLat, lon: newLon };
 }
+
+export function calculateBearing(lat1, lon1, lat2, lon2) {
+  if (lat1 === undefined || lon1 === undefined || lat2 === undefined || lon2 === undefined) {
+    return null;
+  }
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  const θ = Math.atan2(y, x);
+  const degrees = (θ * 180 / Math.PI + 360) % 360;
+
+  const directions = [
+    { label: 'N', arrow: '↑' },
+    { label: 'NE', arrow: '↗' },
+    { label: 'E', arrow: '→' },
+    { label: 'SE', arrow: '↘' },
+    { label: 'S', arrow: '↓' },
+    { label: 'SW', arrow: '↙' },
+    { label: 'W', arrow: '←' },
+    { label: 'NW', arrow: '↖' }
+  ];
+  const index = Math.round(degrees / 45) % 8;
+  const dir = directions[index];
+
+  return {
+    degrees: Math.round(degrees),
+    cardinal: dir.label,
+    arrow: dir.arrow,
+    text: `${dir.label} ${dir.arrow}`
+  };
+}
