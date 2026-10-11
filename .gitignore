@@ -27,14 +27,30 @@ yarn-debug.*
 yarn-error.*
 *.log
 
+# IDE and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
 # macOS and OS metadata
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 *.pem
 
-# local env files
+# local env files and secrets
 .env
 .env*.local
+*.keystore
+local.properties
 
 # typescript
 *.tsbuildinfo
@@ -50,6 +66,12 @@ android/app/.cxx/
 *.apk
 *.aab
 
+# test coverage and cache
+coverage/
+.nyc_output/
+.eslintcache
+
 # model downloads and partial downloads
 *.part
 *.gguf
+
